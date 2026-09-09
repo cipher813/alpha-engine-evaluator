@@ -59,6 +59,17 @@ ESCALATION_CARRY_THRESHOLD = 2
 
 _ESCALATION_LABELS = {"gate:decision", "gate:operator"}
 
+# alpha-engine-config-I10252: a closed issue carrying any of these signals was
+# closed by a HUMAN RULING, not by a merged PR the Director is checking for
+# recovery. The reopen verb is withdrawn for these — see
+# ``_is_human_ruled``/``verify_and_correct``.
+_HUMAN_RULED_LABELS = {"human"}
+_HUMAN_RULED_STATE_REASONS = {"not_planned"}
+#: The ruling form ``backlog-triage``/the Decision Queue writes on a comment
+#: (per ``decision-queue-policy``) — e.g. "**Operator decision 2026-09-08:
+#: ...**". Anchored at the start of the comment body.
+_OPERATOR_DECISION_RE = re.compile(r"^\*\*Operator decision \d{4}-\d{2}-\d{2}")
+
 
 def component_status_map(card: dict) -> dict[str, str]:
     """Flatten every tile's components into ``{name.lower(): status}`` — the
@@ -131,6 +142,34 @@ def evidence_still_adverse(evidence: list[str], status_map: dict[str, str]) -> s
     return "adverse" if any(s in ADVERSE_STATUSES for s in hits.values()) else "recovered"
 
 
+def _is_human_ruled(issue: dict, comments: list[dict]) -> bool:
+    """True when ``issue`` was closed by an operator RULING rather than by a
+    merged PR the loop-verification reopen check should be free to undo
+    (alpha-engine-config-I10252). Any of:
+
+      - the issue carries the ``human`` label — a standing operator marker;
+      - ``state_reason == "not_planned"`` — GitHub's own "closed, not by
+        completing the work" signal, which is what ``backlog-triage``/the
+        Decision Queue set on a ruled close;
+      - the NEWEST comment on the issue opens with the ``**Operator decision
+        YYYY-MM-DD`` form those flows write.
+
+    ``principles.md`` §5 (human authority) reserves a ruled decision to
+    Brian regardless of how confident the system is — this is the reopen
+    path's equivalent of the escalation path's ``_ESCALATION_LABELS`` guard
+    two lines below it."""
+    if _labels_of(issue) & _HUMAN_RULED_LABELS:
+        return True
+    if issue.get("state_reason") in _HUMAN_RULED_STATE_REASONS:
+        return True
+    if comments:
+        newest = comments[-1]
+        body = str(newest.get("body") or "")
+        if _OPERATOR_DECISION_RE.match(body):
+            return True
+    return False
+
+
 def backfill_issue_numbers(
     ledger_items: list[dict], *, repo: str, token: str, gh_request=_gh_request
 ) -> int:
@@ -175,10 +214,11 @@ def verify_and_correct(
     counts = {
         "examined": 0, "skipped_no_issue": 0, "lookup_failed": 0, "corrections": 0,
         "open": 0, "closed_verified": 0, "closed_unrecovered": 0,
-        "closed_unverifiable": 0, "escalated": 0,
+        "closed_unverifiable": 0, "escalated": 0, "closed_ruled_unrecovered": 0,
     }
     reopened: list[int] = []
     escalated: list[int] = []
+    filed_for_ruling: list[int] = []
 
     for item in ledger_items:
         number = item.get("issue_number")
@@ -200,10 +240,24 @@ def verify_and_correct(
         if res.get("state") == "closed":
             outcome = evidence_still_adverse(item.get("evidence") or [], status_map)
             if outcome == "adverse":
-                counts["closed_unrecovered"] += 1
-                if _reopen_unrecovered(api, number, item, gh_request, token):
-                    reopened.append(number)
-                    counts["corrections"] += 1
+                comments = _fetch_comments(api, number, gh_request, token)
+                if _is_human_ruled(res, comments):
+                    counts["closed_ruled_unrecovered"] += 1
+                    if item.get("ruled_unrecovered_notified"):
+                        new_number = _file_new_issue_for_ruled_unrecovered(
+                            api, number, item, gh_request, token,
+                        )
+                        if new_number:
+                            filed_for_ruling.append(new_number)
+                            counts["corrections"] += 1
+                    elif _comment_ruled_unrecovered(api, number, item, gh_request, token):
+                        item["ruled_unrecovered_notified"] = True
+                        counts["corrections"] += 1
+                else:
+                    counts["closed_unrecovered"] += 1
+                    if _reopen_unrecovered(api, number, item, gh_request, token):
+                        reopened.append(number)
+                        counts["corrections"] += 1
             elif outcome == "recovered":
                 counts["closed_verified"] += 1
             else:
@@ -220,7 +274,12 @@ def verify_and_correct(
                 counts["corrections"] += 1
                 escalated.append(number)
 
-    return {**counts, "reopened_issues": reopened, "escalated_issues": escalated}
+    return {
+        **counts,
+        "reopened_issues": reopened,
+        "escalated_issues": escalated,
+        "filed_for_ruling_issues": filed_for_ruling,
+    }
 
 
 def _labels_of(issue: dict) -> set[str]:
@@ -241,6 +300,81 @@ def _reopen_unrecovered(api: str, number: int, item: dict, gh_request, token: st
     )
     gh_request("POST", f"{api}/issues/{number}/comments", token, {"body": comment})
     return True
+
+
+def _fetch_comments(api: str, number: int, gh_request, token: str) -> list[dict]:
+    """Comments on ``number``, oldest-first per the GitHub default order (so
+    ``comments[-1]`` is the newest) — best-effort: a fetch failure reads as
+    "no comments", which makes ``_is_human_ruled`` fall through to its other
+    two signals rather than sinking the pass on one bad lookup."""
+    try:
+        status, res = gh_request("GET", f"{api}/issues/{number}/comments", token)
+    except Exception as e:  # noqa: BLE001 — one bad item must not sink the pass
+        logger.warning("loop_verification: GET issue #%s comments failed: %s", number, e)
+        return []
+    if status != 200 or not isinstance(res, list):
+        logger.warning(
+            "loop_verification: GET issue #%s comments -> HTTP %s", number, status,
+        )
+        return []
+    return res
+
+
+def _comment_ruled_unrecovered(api: str, number: int, item: dict, gh_request, token: str) -> bool:
+    """Non-mutating counterpart to ``_reopen_unrecovered`` for a HUMAN-ruled
+    close (alpha-engine-config-I10252): detection is preserved, the reopen
+    verb is withdrawn. Posts once — ``ruled_unrecovered_notified`` on the
+    ledger item guards the caller against re-posting the same notice every
+    week the metric stays adverse."""
+    evidence = ", ".join(item.get("evidence") or []) or "the cited evidence"
+    comment = (
+        "**Director loop-verification (config#3145):** this issue closed under an "
+        f"operator ruling, but {evidence} still reads RED/WATCH on the current "
+        "Report Card. Per alpha-engine-config-I10252 (human authority, "
+        "principles.md §5), an autonomous pass does not reopen a human-ruled close. "
+        "If the metric is still adverse on next week's card, this will be tracked "
+        "as a new issue citing this ruling instead."
+    )
+    status, _ = gh_request("POST", f"{api}/issues/{number}/comments", token, {"body": comment})
+    if status not in (200, 201):
+        logger.warning(
+            "loop_verification: comment on ruled-unrecovered issue #%s -> HTTP %s",
+            number, status,
+        )
+        return False
+    return True
+
+
+def _file_new_issue_for_ruled_unrecovered(
+    api: str, number: int, item: dict, gh_request, token: str
+) -> int | None:
+    """Files a NEW issue citing the operator ruling on ``number`` rather than
+    reopening it (alpha-engine-config-I10252) — called only once the item has
+    already been notice-commented on a prior run and the metric is STILL
+    adverse the following week. Sets ``ruled_unrecovered_filed`` so a further
+    week's adverse read does not refile again."""
+    evidence = ", ".join(item.get("evidence") or []) or "the cited evidence"
+    title = f"[director] {item.get('title', 'Unresolved metric')} — still adverse after ruled close #{number}"
+    body = (
+        f"Re-tracks `#{number}` (\"{item.get('title', '(untitled)')}\"), which was closed under an "
+        f"operator ruling. {evidence} still reads RED/WATCH on the Report Card the week after that "
+        "ruling was reaffirmed, so this is filed as a new issue rather than reopening the ruled "
+        f"close — per alpha-engine-config-I10252.\n\n"
+        f"## Evidence\n{evidence}\n\n"
+        f"## Prior issue\n#{number}\n"
+    )
+    status, res = gh_request(
+        "POST", f"{api}/issues",
+        token, {"title": title, "body": body, "labels": ["area:director-proposals"]},
+    )
+    if status not in (200, 201):
+        logger.warning(
+            "loop_verification: file new issue for ruled-unrecovered #%s -> HTTP %s",
+            number, status,
+        )
+        return None
+    item["ruled_unrecovered_filed"] = True
+    return res.get("number")
 
 
 def _escalate_carryover(

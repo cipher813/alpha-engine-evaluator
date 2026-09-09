@@ -26,18 +26,23 @@ class FakeGitHub:
     """Records calls; serves canned issue GET/PATCH/POST responses keyed by
     issue number. ``issues`` maps number -> {"state": ..., "labels": [...]}."""
 
-    def __init__(self, issues=None, proposal_issues=None):
+    def __init__(self, issues=None, proposal_issues=None, issue_comments=None):
         self.calls: list[tuple[str, str, dict | None]] = []
         self._issues = issues or {}
         self._proposal_issues = proposal_issues or []
+        self._issue_comments = issue_comments or {}
         self.patched_state: dict[int, str] = {}
         self.added_labels: dict[int, list[str]] = {}
         self.comments: dict[int, list[str]] = {}
+        self.filed_issues: list[dict] = []
 
     def __call__(self, method, url, token, body=None):
         self.calls.append((method, url, body))
         if method == "GET" and "/issues?labels=area:director-proposals" in url:
             return (200, list(self._proposal_issues)) if "page=1" in url else (200, [])
+        if method == "GET" and url.endswith("/comments"):
+            number = int(url.rsplit("/", 2)[-2])
+            return 200, list(self._issue_comments.get(number, []))
         if method == "GET" and url.rsplit("/", 1)[-1].isdigit():
             number = int(url.rsplit("/", 1)[-1])
             issue = self._issues.get(number)
@@ -59,6 +64,10 @@ class FakeGitHub:
             number = int(url.rsplit("/", 2)[-2])
             self.comments.setdefault(number, []).append(body["body"])
             return 201, {}
+        if method == "POST" and url.endswith("/issues"):
+            new_number = 9000 + len(self.filed_issues)
+            self.filed_issues.append({**body, "number": new_number})
+            return 201, {"number": new_number, "html_url": f"https://example/{new_number}"}
         raise AssertionError(f"unexpected call: {method} {url}")
 
 
@@ -210,3 +219,104 @@ def test_bad_gh_response_is_reported_as_unexamined():
     assert result["examined"] == 0
     assert result["lookup_failed"] == 1
     assert result["corrections"] == 0
+
+
+# ── human-ruled close guard (alpha-engine-config-I10252) ────────────────────
+
+
+def test_is_human_ruled_by_state_reason():
+    issue = {"state": "closed", "labels": [], "state_reason": "not_planned"}
+    assert LV._is_human_ruled(issue, []) is True
+
+
+def test_is_human_ruled_by_newest_comment():
+    issue = {"state": "closed", "labels": [], "state_reason": "completed"}
+    comments = [
+        {"body": "an earlier unrelated comment"},
+        {"body": "**Operator decision 2026-09-08: Close as superseded**"},
+    ]
+    assert LV._is_human_ruled(issue, comments) is True
+
+
+def test_is_human_ruled_by_human_label():
+    issue = {"state": "closed", "labels": [{"name": "human"}], "state_reason": "completed"}
+    assert LV._is_human_ruled(issue, []) is True
+
+
+def test_is_human_ruled_false_for_ordinary_close():
+    issue = {"state": "closed", "labels": [], "state_reason": "completed"}
+    comments = [{"body": "fixed in #300"}]
+    assert LV._is_human_ruled(issue, comments) is False
+
+
+def test_closed_not_planned_adverse_is_not_reopened_and_is_counted():
+    """(a) closed + state_reason: not_planned + adverse evidence -> NOT
+    reopened, IS counted under closed_ruled_unrecovered."""
+    gh = FakeGitHub(issues={
+        100: {"state": "closed", "labels": [], "state_reason": "not_planned"},
+    })
+    item = _item(evidence=["price_cache_freshness"])
+    result = LV.verify_and_correct([item], _CARD, repo="r/x", token="tok", gh_request=gh)
+    assert result["closed_ruled_unrecovered"] == 1
+    assert result["closed_unrecovered"] == 0
+    assert 100 not in gh.patched_state
+    assert result["reopened_issues"] == []
+    assert item["ruled_unrecovered_notified"] is True
+    assert "operator ruling" in gh.comments[100][0]
+
+
+def test_closed_operator_decision_comment_is_not_reopened():
+    """(b) closed, last comment starts '**Operator decision 2026-09-08:' ->
+    NOT reopened."""
+    gh = FakeGitHub(
+        issues={100: {"state": "closed", "labels": [], "state_reason": "completed"}},
+        issue_comments={100: [
+            {"body": "**Operator decision 2026-09-08: Close as premise-false at the v1 cutover.**"},
+        ]},
+    )
+    item = _item(evidence=["price_cache_freshness"])
+    result = LV.verify_and_correct([item], _CARD, repo="r/x", token="tok", gh_request=gh)
+    assert result["closed_ruled_unrecovered"] == 1
+    assert 100 not in gh.patched_state
+
+
+def test_closed_human_label_is_not_reopened():
+    """(c) closed with the human label -> NOT reopened."""
+    gh = FakeGitHub(issues={
+        100: {"state": "closed", "labels": [{"name": "human"}], "state_reason": "completed"},
+    })
+    item = _item(evidence=["price_cache_freshness"])
+    result = LV.verify_and_correct([item], _CARD, repo="r/x", token="tok", gh_request=gh)
+    assert result["closed_ruled_unrecovered"] == 1
+    assert 100 not in gh.patched_state
+
+
+def test_ordinary_machine_closed_issue_still_reopens():
+    """(d) regression check — an ordinary machine-closed issue with adverse
+    evidence IS still reopened (existing behaviour)."""
+    gh = FakeGitHub(issues={
+        100: {"state": "closed", "labels": [], "state_reason": "completed"},
+    })
+    item = _item(evidence=["price_cache_freshness"])
+    result = LV.verify_and_correct([item], _CARD, repo="r/x", token="tok", gh_request=gh)
+    assert result["closed_unrecovered"] == 1
+    assert result["closed_ruled_unrecovered"] == 0
+    assert result["reopened_issues"] == [100]
+    assert gh.patched_state[100] == "open"
+
+
+def test_ruled_unrecovered_still_adverse_next_run_files_new_issue_not_reopen():
+    """A second pass on an already-notified ruled-unrecovered item — still
+    adverse — files a NEW issue citing the ruling instead of reopening."""
+    gh = FakeGitHub(issues={
+        100: {"state": "closed", "labels": [], "state_reason": "not_planned"},
+    })
+    item = _item(evidence=["price_cache_freshness"])
+    item["ruled_unrecovered_notified"] = True  # as if a prior run already commented
+    result = LV.verify_and_correct([item], _CARD, repo="r/x", token="tok", gh_request=gh)
+    assert result["closed_ruled_unrecovered"] == 1
+    assert 100 not in gh.patched_state
+    assert result["reopened_issues"] == []
+    assert len(gh.filed_issues) == 1
+    assert "#100" in gh.filed_issues[0]["body"]
+    assert item["ruled_unrecovered_filed"] is True
