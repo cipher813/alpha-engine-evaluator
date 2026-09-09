@@ -1674,7 +1674,13 @@ class TestDirectorExecutionContext:
                           ("krepis.llm", krepis_llm),
                           ("krepis.llm_config", krepis_cfg)):
             monkeypatch.setitem(sys.modules, name, mod)
-        monkeypatch.setattr(A, "_warn_on_degraded_route", lambda r: None)
+        monkeypatch.setattr(A, "_warn_on_degraded_route",
+                            # `**kw`: `_default_llm` names the RESOLVED
+                            # group (alpha-engine-config-I9486), and a
+                            # double with a narrower signature than the
+                            # real function fails on a call the real one
+                            # accepts.
+                            lambda r, **kw: None)
         monkeypatch.setenv("LITELLM_MASTER_KEY", "test-key")
 
         A._default_llm()
@@ -1826,7 +1832,13 @@ class TestDirectorCredentialResolution:
                           ("krepis.llm_config", krepis_cfg),
                           ("krepis.secrets", krepis_secrets)):
             monkeypatch.setitem(sys.modules, name, mod)
-        monkeypatch.setattr(A, "_warn_on_degraded_route", lambda r: None)
+        monkeypatch.setattr(A, "_warn_on_degraded_route",
+                            # `**kw`: `_default_llm` names the RESOLVED
+                            # group (alpha-engine-config-I9486), and a
+                            # double with a narrower signature than the
+                            # real function fails on a call the real one
+                            # accepts.
+                            lambda r, **kw: None)
         return A, captured
 
     def test_placeholder_route_resolves_no_credential(self, monkeypatch):
@@ -2058,7 +2070,13 @@ class TestDirectorNeverUsesTheInProcessRouter:
                           ("krepis.llm_config", krepis_cfg),
                           ("krepis.secrets", krepis_secrets)):
             monkeypatch.setitem(sys.modules, name, mod)
-        monkeypatch.setattr(A, "_warn_on_degraded_route", lambda r: None)
+        monkeypatch.setattr(A, "_warn_on_degraded_route",
+                            # `**kw`: `_default_llm` names the RESOLVED
+                            # group (alpha-engine-config-I9486), and a
+                            # double with a narrower signature than the
+                            # real function fails on a call the real one
+                            # accepts.
+                            lambda r, **kw: None)
 
         A._default_llm()
 
