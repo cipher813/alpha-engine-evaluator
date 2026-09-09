@@ -30,6 +30,15 @@ from pathlib import Path
 import jsonschema
 import yaml
 
+import pytest
+
+# Runs only where the repository tree exists. `ci.yml`'s `docker-image-tests`
+# job mounts ONLY `tests/` into the built image, so this module's repo-root
+# reads (`.github/`, `infrastructure/`, `Dockerfile`, `console.descriptor.yaml`)
+# resolve to nothing there. Declared here rather than as an `--ignore=` flag in
+# the workflow: the module is what knows (alpha-engine-config-I10257).
+pytestmark = pytest.mark.repo_tree
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DESCRIPTOR_PATH = REPO_ROOT / "console.descriptor.yaml"
 SCHEMA_PATH = REPO_ROOT / "tests" / "fixtures" / "component_descriptor.schema.json"
