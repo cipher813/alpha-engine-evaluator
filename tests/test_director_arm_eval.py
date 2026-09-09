@@ -14,6 +14,17 @@ from __future__ import annotations
 
 import unittest
 
+import pytest
+
+# `repo_tree`: this module imports `evals.director_arm_eval`, and `evals/` is
+# deliberately NOT COPYed into the Lambda image — the harness is an operator
+# tool, the image ships only `grading/` and `director/`, and copying it in
+# would put `nousergon_lib.arena` on the deployed function for a comparison
+# the function never runs. So these tests cannot execute against the image's
+# tree, which is exactly what the marker means. They gate fully in the `test`
+# job, which runs the whole repo.
+pytestmark = pytest.mark.repo_tree
+
 from director.schema import ActionItem, DirectorWeeklyActionPlan
 from evals.director_arm_eval import (
     MIN_GROUNDING_RATE,
