@@ -97,3 +97,17 @@ entries:
       guards — not a live call site.
     expires: "2026-11-27"
     tracking: alpha-engine-config-I9295
+
+  # -- `dist` class, enforcement flip (alpha-engine-config-I10225) --
+
+  - path: requirements.txt
+    pattern: "openai:dist"
+    reason: >-
+      `krepis[flow-doctor,openai]==0.59.53` -- the `openai` extra is krepis's
+      own declared transport dependency for the router edge's
+      OpenAI-compatible wire (krepis.llm.LLMClient / krepis's own pyproject:
+      "krepis[openai] for OpenAI / OpenRouter" per the comment above this
+      line). Pulled in through the router package; no module in this repo
+      imports `openai` directly.
+    expires: "2026-12-07"
+    tracking: alpha-engine-config-I10225
