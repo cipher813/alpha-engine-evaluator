@@ -371,9 +371,18 @@ metrics:
     # deriver's target/red_line ORDERING cannot silently read PBO as
     # higher-is-better. `n_floor_declared: 4` is the CSCV split floor declared by
     # the shared engine itself (nousergon_lib.quant.stats.pbo.cscv_pbo's
-    # `min_splits: int = 4`), not a number chosen here. The TRIAL-axis power
-    # floor (n_specs) is undeclared anywhere in the fleet — see I9623.
-    pbo: {target: 0.2, red_line: null, higher_is_better: false, n_floor_declared: 4}
+    # `min_splits: int = 4`), not a number chosen here.
+    # `pbo_min_specs: 5` is the TRIAL-axis floor — alpha-engine-config-I9685,
+    # Brian's operator ruling of 2026-09-08 ("option (a) AND option (b)"):
+    # the 2026-08-28 rotation exhibited both failures at once
+    # (pbo=0.0909, n_splits=44, n_specs=3, selected_counts={"champion-arch": 44})
+    # — 3 aligned specs is too thin a field for CSCV to carry selection
+    # information at all, independent of the split count. Below
+    # `pbo_min_specs` the `pbo` component renders N/A-LOW-N / UNDERPOWERED
+    # regardless of the computed value
+    # (grading/tiles/portfolio_outcome.py::_build_pbo_component). Set at 5 by
+    # the ruling, not derived — do not reopen without a fresh ruling.
+    pbo: {target: 0.2, red_line: null, higher_is_better: false, n_floor_declared: 4, pbo_min_specs: 5}
     psr: {target: 0.95, red_line: 0.5, n_floor_declared: 60}
     regime_weighted_alpha: {target: 0.0, red_line: 0.0, n_floor_declared: 30}
     sharpe_ratio: {target: 1.0, red_line: 0.0, n_floor_declared: 60}

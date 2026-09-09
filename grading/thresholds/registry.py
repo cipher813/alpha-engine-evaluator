@@ -76,6 +76,10 @@ class Band:
     dynamic: bool
     note: str | None
     surface_tile: str
+    #: alpha-engine-config-I9685 — the TRIAL axis (n_specs) floor, distinct
+    #: from n_floor_declared's SPLIT axis. Optional: only the (portfolio_outcome,
+    #: pbo) row declares one today.
+    pbo_min_specs: int | None
 
     @property
     def graded(self) -> bool:
@@ -186,6 +190,7 @@ class ThresholdRegistry:
             dynamic=bool(row.get("dynamic", False)),
             note=row.get("note"),
             surface_tile=row.get("surface_tile") or module,
+            pbo_min_specs=row.get("pbo_min_specs"),
         )
 
     def is_dynamic(self, module: str, name: str) -> bool:
@@ -237,7 +242,7 @@ _REQUIRED_SCORING_KEYS = ("metric", "label", "estimator", "cohort_max_cards",
                           "n_floor_cards", "n_floor_per_status", "statuses_scored")
 _ALLOWED_ROW_KEYS = frozenset({"target", "red_line", "higher_is_better",
                                "n_floor_declared", "dynamic", "note",
-                               "surface_tile"})
+                               "surface_tile", "pbo_min_specs"})
 
 
 _ALLOWED_TILE_KEYS = frozenset({"cascades", "process_weight", "headline_weight"})
