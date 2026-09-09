@@ -35,21 +35,12 @@ from director.budget import (
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 _DEPLOY = _REPO / "infrastructure" / "deploy.sh"
 
-# The `docker-image-tests` job mounts only tests/ into the shipped image, which
-# deliberately does not carry infrastructure/ (see .github/workflows/ci.yml —
-# it already --ignores the other deploy.sh-reading suites for the same reason).
-# The two assertions below are repo-shape assertions, not package assertions, so
-# they are binding in the `test` job that runs against a full checkout and
-# inapplicable inside the image. Everything else in this file exercises the
-# image's own packages and must keep running there.
-_repo_only = pytest.mark.skipif(
-    not _DEPLOY.exists(),
-    reason=(
-        "infrastructure/deploy.sh is not present — running inside the shipped "
-        "image, where this repo-shape assertion does not apply. It is enforced "
-        "by the repo-checkout `test` job."
-    ),
-)
+# Repo-tree assertion: `infrastructure/deploy.sh` is not COPYed into the
+# shipped image, so this is binding in the repo-checkout `test` job and
+# inapplicable in `docker-image-tests`. Declared with the `repo_tree` marker
+# the image job deselects, rather than a skip on the file's absence -- a skip
+# would also go quiet if deploy.sh were genuinely deleted
+# (alpha-engine-config-I10258).
 
 
 def _deploy_director_timeout() -> int:
@@ -81,7 +72,7 @@ class _Context:
 # The invariant the comment used to assert and nothing enforced
 # ---------------------------------------------------------------------------
 
-@_repo_only
+@pytest.mark.repo_tree
 def test_each_ceiling_is_individually_affordable():
     """Each call's funded worst case must fit the function timeout on its own.
 
@@ -112,7 +103,7 @@ def test_each_ceiling_is_individually_affordable():
         )
 
 
-@_repo_only
+@pytest.mark.repo_tree
 def test_the_ceilings_do_not_fit_together_which_is_why_the_budget_exists():
     """Documents the measured overrun this change addresses.
 

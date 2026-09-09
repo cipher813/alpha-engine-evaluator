@@ -41,22 +41,12 @@ EXPECTED_BUCKET = "alpha-engine-research"
 EXPECTED_PREFIX = "decision_artifacts/_cost_raw"
 
 
-# The five tests below read `infrastructure/deploy.sh`, which is NOT copied into
-# the shipped Lambda image — so they are inapplicable in the `docker-image-tests`
-# job that runs this suite against the image's installed packages, and binding in
-# the repo-checkout `test` job. Skipped by file presence rather than by adding a
-# sixth entry to ci.yml's `--ignore` list: that list is a hand-maintained
-# enumeration, and the next deploy.sh-reading suite added would be missing from
-# it with a red image job as the only notice. Mirrors
-# `test_director_invocation_budget.py::_repo_only`.
-_repo_only = pytest.mark.skipif(
-    not DEPLOY_SH.exists(),
-    reason=(
-        "infrastructure/deploy.sh is not present — running inside the shipped "
-        "image, where this repo-shape assertion does not apply. It is enforced "
-        "by the repo-checkout `test` job."
-    ),
-)
+# Repo-tree assertion: `infrastructure/deploy.sh` is not COPYed into the
+# shipped image, so this is binding in the repo-checkout `test` job and
+# inapplicable in `docker-image-tests`. Declared with the `repo_tree` marker
+# the image job deselects, rather than a skip on the file's absence -- a skip
+# would also go quiet if deploy.sh were genuinely deleted
+# (alpha-engine-config-I10258).
 
 
 def _script() -> str:
@@ -78,7 +68,7 @@ def _merge_lambda_env_lines(text: str) -> list[str]:
     return [ln for ln in _executable_lines(text) if "merge-lambda-env" in ln]
 
 
-@_repo_only
+@pytest.mark.repo_tree
 def test_deploy_sh_merges_cost_sink_onto_the_director_function():
     hits = _merge_lambda_env_lines(_script())
     assert hits, (
@@ -93,7 +83,7 @@ def test_deploy_sh_merges_cost_sink_onto_the_director_function():
     )
 
 
-@_repo_only
+@pytest.mark.repo_tree
 def test_deploy_sh_cost_sink_bucket_literal_is_exact():
     hits = _merge_lambda_env_lines(_script())
     bucket_hits = [ln for ln in hits if f"KREPIS_COST_SINK_BUCKET={EXPECTED_BUCKET}" in ln]
@@ -104,7 +94,7 @@ def test_deploy_sh_cost_sink_bucket_literal_is_exact():
     )
 
 
-@_repo_only
+@pytest.mark.repo_tree
 def test_deploy_sh_cost_sink_prefix_literal_is_exact():
     hits = _merge_lambda_env_lines(_script())
     prefix_hits = [ln for ln in hits if f"KREPIS_COST_SINK_PREFIX={EXPECTED_PREFIX}" in ln]
@@ -116,7 +106,7 @@ def test_deploy_sh_cost_sink_prefix_literal_is_exact():
     )
 
 
-@_repo_only
+@pytest.mark.repo_tree
 def test_deploy_sh_uses_merge_not_replace_for_cost_sink():
     """The merge-lambda-env call must not be a disguised `--environment` write.
 
@@ -135,7 +125,7 @@ def test_deploy_sh_uses_merge_not_replace_for_cost_sink():
         )
 
 
-@_repo_only
+@pytest.mark.repo_tree
 def test_report_card_function_does_not_get_the_cost_sink_env():
     """The grading Lambda makes zero LLM calls (measured: no LLMClient in
     grading/) — it must not receive KREPIS_COST_SINK_* either."""

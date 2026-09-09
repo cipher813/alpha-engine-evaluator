@@ -29,34 +29,33 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LINTER = REPO_ROOT / "scripts" / "lint_extras.py"
 
-# Some repos run this suite INSIDE the built Lambda image, where the Dockerfile
-# copies the application package and not `scripts/`. Importing the linter at
-# module scope there raises FileNotFoundError during COLLECTION, which fails the
-# whole suite rather than one test — measured on crucible-evaluator's
-# `docker-image-tests` job, /var/task/scripts/lint_extras.py absent.
+# The whole module tests a REPO-HYGIENE checker living in `scripts/`, which the
+# Dockerfile does not copy into the image. Declared with the `repo_tree` marker
+# that `docker-image-tests` deselects (alpha-engine-config-I10258), replacing a
+# module-level `pytest.skip(allow_module_level=True)` on the file's absence --
+# that skip also went quiet if the linter were genuinely deleted, and
+# `test_this_repo_is_clean` is what should catch that.
 #
-# Skipping is safe here and only here: this file tests a REPO-HYGIENE checker,
-# and the packaged image is not the repo. The check itself is not weakened —
-# `lint-extras` runs it against the real tree in its own CI job, so a genuinely
-# broken linter still fails the build. The skip is loud (a stated reason) and
-# scoped to the one condition where the file cannot exist by design; it never
-# fires in a checkout, where `test_this_repo_is_clean` would catch a deletion.
-if not LINTER.exists():  # pragma: no cover - image-context guard
-    pytest.skip(
-        f"{LINTER} absent — running inside a packaged image, not a checkout. "
-        "The linter is exercised against the real tree by the `lint-extras` CI job.",
-        allow_module_level=True,
-    )
+# The loader is deliberately LAZY. A marker is applied AFTER collection, so an
+# eager exec_module at import time would still raise FileNotFoundError inside
+# the image and fail the whole suite during collection -- the exact failure the
+# old module-level skip was working around. Deferring it into `_linter()` is
+# what makes the marker sufficient on its own.
+pytestmark = pytest.mark.repo_tree
 
-_spec = importlib.util.spec_from_file_location("lint_extras", LINTER)
-assert _spec and _spec.loader
-lint_extras = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(lint_extras)
+
+def _linter():
+    """Import `scripts/lint_extras.py` off disk, on first use."""
+    spec = importlib.util.spec_from_file_location("lint_extras", LINTER)
+    assert spec and spec.loader, f"cannot load {LINTER}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _rc(target: Path) -> int:
     """Run the checker in-process against `target`."""
-    return lint_extras.main(["lint_extras.py", str(target)])
+    return _linter().main(["lint_extras.py", str(target)])
 
 
 def _write(tmp_path: Path, name: str, body: str) -> None:

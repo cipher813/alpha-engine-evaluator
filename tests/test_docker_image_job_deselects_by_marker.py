@@ -20,6 +20,7 @@ back to a hand-kept list.
 
 from __future__ import annotations
 
+import pathlib
 import re
 from pathlib import Path
 
@@ -36,6 +37,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 CONFTEST = REPO_ROOT / "tests" / "conftest.py"
 MARKER = "repo_tree"
+
+# A path under the repository root that the built image does not carry. `tests/`
+# is mounted and the application packages are COPYed, so those are absent here
+# on purpose.
+IMAGE_ABSENT_PATH = re.compile(
+    r"""/\s*["'](\.github|infrastructure|scripts|Dockerfile|console\.descriptor\.yaml)["']"""
+)
+
+# `pytest.skip(...)` / `pytest.mark.skipif(...)` guarding on a path's absence --
+# `.exists()`, `.is_file()`, `.is_dir()` -- the idiom I10258 retired.
+ABSENCE_SKIP = re.compile(
+    r"""pytest\.(?:skip|mark\.skipif)\(.{0,200}?\.(?:exists|is_file|is_dir)\(\)""",
+    re.S,
+)
 
 
 def _docker_job_block() -> str:
@@ -76,37 +91,50 @@ def test_the_marker_is_registered():
     )
 
 
-def test_every_repo_tree_reader_declares_itself():
-    """A module reading an image-absent repo path declares that on the MODULE.
+def test_every_repo_tree_reader_carries_the_marker():
+    """A module reading an image-absent repo path declares it with the MARKER.
 
-    Two declarations are accepted, because they are not interchangeable:
+    One idiom, not two. An earlier revision also accepted a module-level
+    ``pytest.skip`` / ``skipif`` keyed on the path's absence, because five
+    modules used that form. They were converted in
+    ``alpha-engine-config-I10258`` and the escape hatch is now gone.
 
-    * ``pytestmark = pytest.mark.repo_tree`` -- the whole module is repo-tree,
-      and a missing file in the repo context is a LOUD failure. Preferred.
-    * a module-level ``pytest.skip`` / ``skipif`` keyed on the path's absence --
-      for a module that is only PARTLY repo-tree (some of its assertions do
-      hold against the shipped package and are worth running in the image).
-      Weaker: it also goes quiet if the file is genuinely deleted.
-
-    What is NOT accepted is neither -- that is the shape that reddened main on
-    2026-09-08. Unifying the second form onto the marker is tracked separately.
+    An absence-keyed skip cannot tell "the repository tree is not mounted, this
+    is the image job" from "the file this test defends was deleted." In the
+    second case the assertion disappears and nothing goes red. The marker
+    separates them: the image job deselects it, and the repo-context job still
+    fails loud on a missing file.
     """
     unmarked = []
     for path in sorted((REPO_ROOT / "tests").glob("test_*.py")):
         src = path.read_text()
         if f"pytest.mark.{MARKER}" in src:
             continue
-        if not re.search(
-            r"/\s*\"(\.github|infrastructure|Dockerfile|console\.descriptor\.yaml)\"",
-            src,
-        ):
-            continue
-        if re.search(r"pytest\.(skip|mark\.skipif)\(", src):
+        if not IMAGE_ABSENT_PATH.search(src):
             continue
         unmarked.append(path.name)
     assert not unmarked, (
         "these modules read a repository path the built image does not carry "
-        f"but neither carry `pytest.mark.{MARKER}` nor a module-level "
-        "image-context skip, so docker-image-tests will fail on them: "
-        f"{unmarked} (alpha-engine-config-I10257)"
+        f"but do not carry `pytest.mark.{MARKER}`, so docker-image-tests will "
+        f"fail on them: {unmarked} (alpha-engine-config-I10257/-I10258)"
+    )
+
+
+def test_no_module_declares_itself_with_an_absence_keyed_skip():
+    """The weaker idiom must not come back (alpha-engine-config-I10258)."""
+    offenders = []
+    for path in sorted((REPO_ROOT / "tests").glob("test_*.py")):
+        # This module carries both patterns as regex SOURCE, not as behaviour.
+        if path.name == pathlib.Path(__file__).name:
+            continue
+        src = path.read_text()
+        if not IMAGE_ABSENT_PATH.search(src):
+            continue
+        if ABSENCE_SKIP.search(src):
+            offenders.append(path.name)
+    assert not offenders, (
+        "these modules gate a repo-tree assertion on a file's ABSENCE "
+        f"({offenders}). That also goes quiet when the file is genuinely "
+        f"deleted. Use `pytest.mark.{MARKER}`, which the image job deselects "
+        "and the repo-context job does not (alpha-engine-config-I10258)"
     )

@@ -29,16 +29,22 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 
+# The three tests marked `repo_tree` below read those two files, which the
+# shipped image does not carry; everything else here asserts on
+# `grading.deploy_paths` and runs in both jobs. The marker is what
+# `docker-image-tests` deselects. These three used to `pytest.skip` on the
+# file's absence instead -- weaker, because that also goes quiet if deploy.yml
+# or the Dockerfile is genuinely deleted, which is the disagreement this module
+# exists to catch (alpha-engine-config-I10258).
+
 
 def _workflow_push_paths() -> list[str]:
     workflow = yaml.load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     return workflow["on"]["push"]["paths"]
 
 
+@pytest.mark.repo_tree
 def test_workflow_path_filter_is_exact_projection_of_deploy_path_contract():
-    if not DEPLOY_WORKFLOW.is_file():
-        pytest.skip("GitHub workflow definitions are intentionally absent from the Lambda image")
-
     assert _workflow_push_paths() == list(deploy_paths.DEPLOY_PATH_PATTERNS)
 
 
@@ -128,6 +134,7 @@ def _dockerfile_copy_sources() -> list[str]:
     return sources
 
 
+@pytest.mark.repo_tree
 def test_every_dockerfile_copy_source_is_a_declared_deploy_path():
     """A source that ships in the image but triggers no deploy is un-deployable.
 
@@ -137,9 +144,6 @@ def test_every_dockerfile_copy_source_is_a_declared_deploy_path():
     first run — COPYed into the image, absent from the deploy filter, so every
     change to it had shipped nowhere.
     """
-    if not DOCKERFILE.is_file():
-        pytest.skip("Dockerfile is intentionally absent from the Lambda image")
-
     uncovered = [
         src for src in _dockerfile_copy_sources()
         if not deploy_paths.is_deploy_relevant_path(src)
@@ -152,14 +156,9 @@ def test_every_dockerfile_copy_source_is_a_declared_deploy_path():
     )
 
 
+@pytest.mark.repo_tree
 def test_dockerfile_copy_source_parser_ignores_build_stage_copies():
     """A ``COPY --from=builder`` source is a stage path, not a repo path."""
-    if not DOCKERFILE.is_file():
-        # docker-image-tests runs this suite INSIDE the built image, where
-        # /var/task holds only what the Dockerfile COPYed — not the Dockerfile.
-        # The sibling test above already carries this guard; omitting it here
-        # made the image job red while every local run passed.
-        pytest.skip("Dockerfile is intentionally absent from the Lambda image")
     sources = _dockerfile_copy_sources()
     assert sources, "parser found no COPY sources at all"
     assert not any(s.startswith("--") for s in sources)
