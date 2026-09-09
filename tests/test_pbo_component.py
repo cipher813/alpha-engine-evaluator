@@ -154,18 +154,68 @@ class TestPboComponent:
         assert "does NOT clear" in c["status_reason"]
 
     def test_degenerate_selection_is_stated_in_the_reason(self, s3):
-        """A single spec winning every split makes PBO structurally low. The
-        card must say so beside the number rather than publish a bare GREEN."""
+        """A single spec winning every split makes PBO structurally low, AND
+        (alpha-engine-config-I9685) this exact payload's n_specs=3 is below
+        the trial-axis floor of 5 — the floor binds first, rendering
+        N/A-LOW-N rather than a bare GREEN. The card still states the
+        degeneracy in the reason."""
         _put_leaderboard(s3, {"date": "2026-08-28", "selection_pbo": _block(
             pbo=0.0, n_specs=3, selected_counts={"champion-arch": 44},
             dropped_misaligned_specs=["horizon-60d", "horizon-90d"])})
         c = _build_pbo_component(BUCKET, s3_client=s3).model_dump()
-        assert c["status"] == "GREEN"
+        assert c["status"] == "N/A-LOW-N"
         r = c["status_reason"]
         assert "DEGENERATE" in r
         assert "n_specs=3" in r
         assert "horizon-60d" in r
         assert "2026-08-28" in r
+        assert "UNDERPOWERED" in r
+
+    # ── alpha-engine-config-I9685: trial-axis floor + strict-dominance ──────
+
+    def test_below_trial_axis_floor_is_underpowered_never_green(self, s3):
+        """(i) n_specs=3 (below pbo_min_specs=5) -> N/A-LOW-N regardless of
+        the computed pbo value."""
+        _put_leaderboard(s3, {"date": "2026-08-28", "selection_pbo": _block(
+            n_specs=3, pbo=0.01, selected_counts={"a": 20, "b": 24})})
+        c = _build_pbo_component(BUCKET, s3_client=s3).model_dump()
+        assert c["status"] == "N/A-LOW-N"
+        assert "UNDERPOWERED" in c["status_reason"]
+        assert "n_specs=3" in c["status_reason"]
+
+    def test_dominant_selection_at_adequate_n_specs_is_watch_not_green(self, s3):
+        """(ii) n_specs=6, selected_counts single-member -> WATCH, never
+        GREEN, regardless of how low pbo reads."""
+        _put_leaderboard(s3, {"date": "2026-08-28", "selection_pbo": _block(
+            n_specs=6, pbo=0.0, selected_counts={"champion-arch": 44})})
+        c = _build_pbo_component(BUCKET, s3_client=s3).model_dump()
+        assert c["status"] == "WATCH"
+        assert "DEGENERATE" in c["status_reason"]
+
+    def test_spread_selection_below_target_at_adequate_n_specs_is_green(self, s3):
+        """(iii) n_specs=6, a spread selected_counts, pbo below target ->
+        GREEN — the floor and the dominance downgrade both clear."""
+        _put_leaderboard(s3, {"date": "2026-08-28", "selection_pbo": _block(
+            n_specs=6, pbo=0.09, selected_counts={"a": 20, "b": 14, "c": 10})})
+        c = _build_pbo_component(BUCKET, s3_client=s3).model_dump()
+        assert c["status"] == "GREEN"
+        assert c["value"] == pytest.approx(0.09)
+
+    def test_20260828_payload_verbatim_is_low_n_floor_binds_first(self, s3):
+        """(iv) the 2026-08-28 rotation payload verbatim (pbo=0.090909,
+        n_splits=44, n_specs=3, selected_counts single-member, two dropped
+        specs) -> N/A-LOW-N. The trial-axis floor binds before the
+        dominance downgrade and before the target comparison."""
+        _put_leaderboard(s3, {"date": "2026-08-28", "selection_pbo": {
+            "status": "ok", "n_splits": 44, "n_specs": 3,
+            "spec_ids": ["champion-arch"], "pbo": 0.090909,
+            "selected_counts": {"champion-arch": 44},
+            "dropped_misaligned_specs": ["horizon-60d", "horizon-90d"],
+            "pbo_target": 0.2, "pbo_pass": True,
+        }})
+        c = _build_pbo_component(BUCKET, s3_client=s3).model_dump()
+        assert c["status"] == "N/A-LOW-N"
+        assert c["value"] is None or c["value"] == pytest.approx(0.090909)
 
     def test_ungraded_registry_row_raises_never_silent_green(self, s3, monkeypatch):
         """A null target would make every branch fall through to an
@@ -176,10 +226,27 @@ class TestPboComponent:
         class _NoBar:
             target = None
             red_line = None
+            pbo_min_specs = 5
 
         monkeypatch.setattr(po, "resolve_band", lambda *a, **k: _NoBar())
         _put_leaderboard(s3, {"date": "2026-08-28", "selection_pbo": _block()})
         with pytest.raises(MetricContractError, match="declares no target"):
+            po._build_pbo_component(BUCKET, s3_client=s3)
+
+    def test_ungraded_pbo_min_specs_raises_never_silent_pass(self, s3, monkeypatch):
+        """A null pbo_min_specs would make the floor check inert. Grading
+        with no trial-axis bar must raise, mirroring the existing target
+        guard immediately above."""
+        import grading.tiles.portfolio_outcome as po
+        from grading.metric_record import MetricContractError
+
+        class _NoSpecFloor:
+            target = 0.2
+            pbo_min_specs = None
+
+        monkeypatch.setattr(po, "resolve_band", lambda *a, **k: _NoSpecFloor())
+        _put_leaderboard(s3, {"date": "2026-08-28", "selection_pbo": _block()})
+        with pytest.raises(MetricContractError, match="declares no pbo_min_specs"):
             po._build_pbo_component(BUCKET, s3_client=s3)
 
     def test_corrupt_leaderboard_raises_never_renders_a_number(self, s3):

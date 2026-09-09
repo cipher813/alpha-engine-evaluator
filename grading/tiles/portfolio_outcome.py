@@ -439,6 +439,7 @@ def _build_pbo_component(bucket: str, s3_client=None):
     src = f"s3://{bucket}/{MODEL_ZOO_LEADERBOARD_KEY}"
     band = resolve_band(MODULE, "pbo", DEFAULT_BAND)
     target = band.target
+    min_specs = band.pbo_min_specs
     if target is None:
         # Fail loud rather than grade against no bar. §12 declares 0.2; a null
         # target here means the registry row was edited to ungraded, and the
@@ -448,6 +449,17 @@ def _build_pbo_component(bucket: str, s3_client=None):
             "pbo: the threshold registry declares no target for "
             "(portfolio_outcome, pbo). The bar is SYSTEM_OPTIMIZED.md §12 "
             "(PBO < 0.2); restore it in grading/thresholds/registry.yaml."
+        )
+    if min_specs is None:
+        # alpha-engine-config-I9685: the trial-axis floor is a ruled bar
+        # (Brian's 2026-09-08 operator ruling), declared in the registry, never
+        # a tile literal. A null here means the row was edited to drop it — fail
+        # loud rather than silently grading PBO with no trial-axis floor at all.
+        raise MetricContractError(
+            "pbo: the threshold registry declares no pbo_min_specs for "
+            "(portfolio_outcome, pbo). The trial-axis floor is Brian's "
+            "2026-09-08 ruling on alpha-engine-config-I9685 (pbo_min_specs: 5); "
+            "restore it in grading/thresholds/registry.yaml."
         )
 
     block, na_detail = _read_selection_pbo(bucket, s3_client=s3_client)
@@ -485,10 +497,11 @@ def _build_pbo_component(bucket: str, s3_client=None):
     # never inferred away.
     dropped = block.get("dropped_misaligned_specs") or []
     counts = block.get("selected_counts") or {}
+    is_dominant = isinstance(counts, dict) and len(counts) == 1 and n_splits
     caveats = [f"n_specs={n_specs}"]
     if dropped:
         caveats.append(f"{len(dropped)} spec(s) dropped as misaligned ({', '.join(map(str, dropped))})")
-    if isinstance(counts, dict) and len(counts) == 1 and n_splits:
+    if is_dominant:
         only = next(iter(counts))
         caveats.append(
             f"selection is DEGENERATE — '{only}' was the in-sample winner in all "
@@ -504,6 +517,29 @@ def _build_pbo_component(bucket: str, s3_client=None):
         headline = (
             f"pbo = {pbo:.4g} over n_splits={n_splits}, below the engine's "
             f"declared floor of {_PBO_MIN_SPLITS} — UNDERPOWERED"
+        )
+    elif n_specs is None or n_specs < min_specs:
+        # alpha-engine-config-I9685 (a) — the TRIAL-axis floor. A count floor
+        # catches a thin field (too few trials for CSCV to carry selection
+        # information at all), distinct from the split-axis floor above. This
+        # is checked before the dominance downgrade and before the target
+        # comparison — the floor binds first, regardless of what pbo computed to.
+        status = "N/A-LOW-N"
+        headline = (
+            f"pbo = {pbo:.4g} over n_specs={n_specs}, below the declared trial-axis "
+            f"floor of {min_specs} (alpha-engine-config-I9685) — UNDERPOWERED"
+        )
+    elif is_dominant:
+        # alpha-engine-config-I9685 (b) — the strict-dominance downgrade. One
+        # spec won every split: near-zero PBO here is returned BY CONSTRUCTION
+        # (there was nothing else to select against), not as evidence of
+        # robustness. WATCH regardless of the PBO value and regardless of
+        # n_specs — never GREEN on a one-horse race.
+        status = "WATCH"
+        headline = (
+            f"pbo = {pbo:.4g} is DEGENERATE — selection was strictly dominant across "
+            f"all {n_splits} splits (alpha-engine-config-I9685), not evidence of "
+            f"robustness against a contested sweep"
         )
     elif target is not None and pbo < target:
         status = "GREEN"
