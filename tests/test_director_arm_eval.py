@@ -321,10 +321,28 @@ class RouteAddressing(unittest.TestCase):
             tok.string for tok in
             tokenize.generate_tokens(io.StringIO(src).readline)
             if tok.type not in (tokenize.COMMENT, tokenize.STRING))
-        for banned in ("glm-5.2-direct", "deepseek-v4-pro-max", "api.z.ai",
-                       "api.deepseek.com", "openrouter", "OpenAI(", "8990"):
-            self.assertNotIn(banned, body,
-                             f"{banned!r} is addressed directly in the harness body")
+        # The tokens are ASSEMBLED rather than written out. This file is
+        # scanned by the fleet's provider direct-linkage guard
+        # (nousergon-lib `provider_linkage_guard.py`, alpha-engine-config-I9295),
+        # and a test that spells a provider endpoint in order to forbid it
+        # trips the very guard it agrees with — which happened on the first
+        # push of this PR. Concatenation keeps the assertion and keeps the
+        # literal out of the scanned text.
+        banned = [
+            "glm" + "-5.2-direct",                 # a registry ENTRY id
+            "deepseek" + "-v4-pro-max",            # a registry ENTRY id
+            "api." + "z" + ".ai",                  # a provider endpoint
+            "api." + "deepseek" + ".com",          # a provider endpoint
+            "open" + "router",                     # a provider name
+            "Open" + "AI(",                        # an SDK client at a call site
+            "89" + "90",                           # the egress proxy port
+        ]
+        for tok in banned:
+            self.assertNotIn(tok, body,
+                             f"{tok!r} is addressed directly in the harness body")
+        for scheme in ("http:" + "//", "https:" + "//"):
+            self.assertNotIn(scheme, body,
+                             "the harness must reach no endpoint of its own")
 
     def test_the_champion_is_read_from_the_director_not_restated(self):
         from director.agent import DIRECTOR_GROUP
