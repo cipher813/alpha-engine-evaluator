@@ -69,6 +69,15 @@ def pytest_configure(config):
         "real_artifact_registry: read the ARTIFACT_REGISTRY mirror from S3 for "
         "real instead of the suite-wide test double",
     )
+    config.addinivalue_line(
+        "markers",
+        "repo_tree: asserts a property of the REPOSITORY tree (.github/, "
+        "infrastructure/, Dockerfile, console.descriptor.yaml) rather than of "
+        "the importable package. ci.yml's docker-image-tests job mounts only "
+        "tests/ into the built image, so these cannot resolve there and it "
+        "deselects them with `-m \'not repo_tree\'` "
+        "(alpha-engine-config-I10257)",
+    )
 
 
 @pytest.fixture(autouse=True)
