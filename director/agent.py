@@ -530,10 +530,27 @@ def _warn_on_degraded_route(
     # that never emits, arrived at from the other direction.
     #
     # BEFORE the call, the consumer genuinely cannot know which entry will serve
-    # through the proxy: LiteLLM walks the fallback chain internally and the
-    # resolution contract reports the group, by design. So at THIS point the
-    # only degradation signal available is `skipped_entries` — entries the
-    # resolver itself refused before handing over.
+    # through the proxy: LiteLLM walks the fallback chain internally. So at
+    # THIS point the only degradation signal available is `skipped_entries` —
+    # entries the resolver itself refused before handing over.
+    #
+    # CORRECTED 2026-09-09 (alpha-engine-config-I10399), for the fourth time in
+    # this comment's life. It used to add "and the resolution contract reports
+    # the group, by design", which was measurably FALSE and was the premise the
+    # whole paragraph rested on: `resolve_group_spec` emitted the qualified
+    # primary DEPLOYMENT name (`ultra-glm-5.2-direct`) as the model to send, so
+    # LiteLLM had no group in front of the request and applied no chain at all.
+    # Measured live, back to back, through the running router:
+    #
+    #     model="ultra"                -> OK, served deepseek-v4-pro
+    #     model="ultra-glm-5.2-direct" -> 429, Available Model Group Fallbacks=[]
+    #
+    # The comment asserted the property; nothing tested it; the property was
+    # false; and I8165's second arm was unreachable from this call site as a
+    # result. It is true again as of the I10399 krepis resolver — which is the
+    # pin floor `requirements.txt` states — and `tests/test_director_addresses_
+    # a_group.py` now fails if it stops being true, in this repo, where the
+    # consumer that depends on it lives.
     #
     # CORRECTED 2026-08-22 (alpha-engine-config-I8165). This comment used to end
     # "the consumer genuinely cannot know which entry served" full stop, and
