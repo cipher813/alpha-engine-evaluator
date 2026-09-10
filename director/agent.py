@@ -1018,9 +1018,21 @@ class _KrepisStructuredDirector:
         #: attempt that matters look like the previous healthy one
         #: (alpha-engine-config-I7311).
         self.last_usage = None
+        #: Which rung of the model-portability-policy §7 structured-output
+        #: ladder produced the most recent plan — ``native`` (strict
+        #: ``response_format``), ``tool_emulation``, or ``prompt_only``.
+        #: krepis populates it on EVERY call including undegraded ones, and
+        #: this module used to drop it on the floor. It is a portability fact
+        #: about the serving arm, and it is the difference between an arm that
+        #: holds the schema by contract and one that holds it by persuasion —
+        #: which is exactly what an arm comparison has to see
+        #: (alpha-engine-config-I9486). ``None`` until a call RETURNS, for the
+        #: same reason ``last_usage`` is.
+        self.last_structured_rung = None
 
     def invoke(self, messages: list) -> DirectorWeeklyActionPlan:
         self.last_usage = None
+        self.last_structured_rung = None
         system, user_content = _split_messages(messages)
         # No `max_tokens=` here. It carried a literal 8000 until 2026-08-04,
         # which SHADOWED the registry: `LLMClient.structured` takes the
@@ -1077,6 +1089,7 @@ class _KrepisStructuredDirector:
             total_timeout=self.total_timeout_s,
         )
         self.last_usage = getattr(result, "usage", None)
+        self.last_structured_rung = getattr(result, "structured_output_rung", None)
         plan: DirectorWeeklyActionPlan = result.parsed
         plan.director_model = self._director_model
         plan.resolved_model = result.model
@@ -1090,10 +1103,35 @@ class _KrepisStructuredDirector:
         return plan
 
 
-def _default_llm(budget=None) -> _KrepisStructuredDirector:
+def _default_llm(
+    budget=None,
+    *,
+    group: str | None = None,
+    callsite_id: str = "director-plan",
+) -> _KrepisStructuredDirector:
     """Construct the real structured-output Director client (lazy import).
 
-    Resolves ``DIRECTOR_GROUP`` ("ultra") through
+    ``group`` is the registry CAPABILITY CLASS to resolve, defaulting to
+    :data:`DIRECTOR_GROUP`. It is a parameter, not a hard-coded literal,
+    because `alpha-engine-config-I9486` asked a question this module could
+    not previously be made to answer: *is the Director served acceptably by
+    `high` rather than `ultra`?* Answering it required standing the same
+    prompt, the same schema and the same retry loop in front of a second arm,
+    and with the group frozen at import the only way to do that was to
+    reconstruct the client outside this function — which is exactly the
+    `principles.md` §2.8 violation (a hand-built ``ModelSpec``, a provider
+    name, an SDK client at the call site) that the migration to
+    ``resolve_group_spec`` removed. A GROUP parameter keeps every arm
+    addressed the one legal way.
+
+    **It is a group handle and there is deliberately no model-id override**,
+    for the same reason ``retro.RETRO_JUDGE_GROUP_DEFAULT`` has none: the tier
+    is configurable, the model is not. There is also no env override here —
+    the production Director's tier is a routing decision recorded in the
+    registry and in this constant, not something an operator flips at runtime;
+    the evaluation harness passes it explicitly and in-process.
+
+    Resolves ``group`` (default ``DIRECTOR_GROUP``, "ultra") through
     ``krepis.router.resolve_group_structured()`` — krepis' documented public
     contract for programmatic callers — and builds the ``ModelSpec`` from the
     returned route: provider, deployment_id, api_base_url, and the credential
@@ -1160,14 +1198,20 @@ def _default_llm(budget=None) -> _KrepisStructuredDirector:
     # `CapabilityUnavailableError` from BOTH `laptop` and `lambda`; after it,
     # both resolve `litellm_proxy` / `ultra-glm-5.2-direct` with
     # `supports_streaming=True`. A group route declares its PRIMARY's flag.
+    group = group or DIRECTOR_GROUP
     spec, route = resolve_group_spec(
-        DIRECTOR_GROUP,
+        group,
         exec_context=DIRECTOR_EXEC_CONTEXT,
         wire="openai",
         requires=("streaming",),
     )
     _assert_routed_through_the_proxy(route)
-    _warn_on_degraded_route(route)
+    # The metric is named for the group that RESOLVED, never for the
+    # Director's default — emitting a challenger arm's fallback under
+    # `Group=ultra` would attribute it to the production plan call, the same
+    # mis-attribution `_warn_on_degraded_route`'s own docstring warns the
+    # retro judge against.
+    _warn_on_degraded_route(route, group=group)
 
     # The schema and auth-token checks that used to live here are inside
     # `resolve_group_spec`, which refuses rather than guesses on both counts.
@@ -1179,7 +1223,7 @@ def _default_llm(budget=None) -> _KrepisStructuredDirector:
     logger.info(
         "Director route: group=%s model=%s provider=%s route=%s "
         "(primary=%s, max_tokens=%s, transport=%s)",
-        DIRECTOR_GROUP, route["deployment_id"], spec.provider,
+        group, route["deployment_id"], spec.provider,
         route.get("route"), route.get("primary_model"), spec.max_tokens,
         spec.transport,
     )
@@ -1277,7 +1321,14 @@ def _default_llm(budget=None) -> _KrepisStructuredDirector:
     )
     client = LLMClient(
         spec,
-        callsite_id="director-plan",
+        # A challenger arm's spend must NOT land on the production plan call's
+        # row: `callsite_id` is the join key between the emitted cost row and
+        # `LLM_CALLSITE_REGISTRY.yaml`, so an evaluation billed as
+        # `director-plan` would make the weekly Director's cost history
+        # unreadable for exactly the weeks a measurement was taken. The
+        # harness passes `director-plan-arm-eval`, which has its own registry
+        # row.
+        callsite_id=callsite_id,
         timeout=quoted_timeout,
         max_retries=_CLIENT_MAX_RETRIES,
         **api_kwargs,
@@ -1837,6 +1888,8 @@ def build_action_plan(
     resolved_digest: str | None = None,
     llm=None,
     budget=None,
+    group: str | None = None,
+    callsite_id: str = "director-plan",
 ) -> DirectorWeeklyActionPlan:
     """Run the Director: report card → DirectorWeeklyActionPlan.
 
@@ -1850,8 +1903,26 @@ def build_action_plan(
     per-attempt timeout is the smaller of its static ceiling and what the
     invocation can still afford. Omitted (or ``None``) means unbounded, which
     is the behaviour outside Lambda.
+
+    ``group`` selects the registry capability class (default
+    :data:`DIRECTOR_GROUP`). Production passes nothing; the arm evaluation
+    (``evals/director_arm_eval.py``, alpha-engine-config-I9486) passes each
+    arm under test, with a distinct ``callsite_id`` so its spend does not land
+    on the production plan call's cost row. Ignored when ``llm`` is injected —
+    an injected client has already chosen its route, and silently re-resolving
+    around it would make the parameter a lie.
     """
-    llm = llm or _default_llm(budget)
+    if llm is not None and (group is not None or callsite_id != "director-plan"):
+        # Fail loud rather than accept an argument that cannot take effect: a
+        # harness that thinks it graded `high` and actually graded whatever
+        # the injected double serves produces a verdict with no relationship
+        # to the thing it names.
+        raise ValueError(
+            "build_action_plan(): `group`/`callsite_id` select the route and "
+            "are meaningless alongside an injected `llm`, which has already "
+            "resolved one. Pass one or the other."
+        )
+    llm = llm or _default_llm(budget, group=group, callsite_id=callsite_id)
     messages = build_messages(report_card, carryover=carryover, roadmap_digest=roadmap_digest,
                               resolved_digest=resolved_digest)
     plan = _invoke_with_retry(llm, messages, budget=budget)
