@@ -12,6 +12,7 @@ and the comparison could not have failed. A comparison that cannot return
 """
 from __future__ import annotations
 
+import pathlib
 import unittest
 
 import pytest
@@ -24,6 +25,25 @@ import pytest
 # tree, which is exactly what the marker means. They gate fully in the `test`
 # job, which runs the whole repo.
 pytestmark = pytest.mark.repo_tree
+
+# THE MARKER IS NOT ENOUGH, and the distinction cost a CI round trip.
+# `-m 'not repo_tree'` deselects at RUN time; pytest still IMPORTS every test
+# module at COLLECTION time, so an unimportable module is a collection ERROR
+# that no marker can deselect.
+#
+# The condition below is deliberately "is the REPO TREE here", not "does
+# `evals` import". `pytest.importorskip("evals")` would have been one line and
+# would also have silently skipped this entire file if `evals/` were ever
+# deleted or renamed — turning a real breakage into a green run, which is the
+# masking these tests exist to catch elsewhere. The Dockerfile is present in
+# every checkout and absent from the image's mounted `tests/`-only tree, so it
+# discriminates the two environments exactly; with the tree present and
+# `evals/` gone, the import below runs and FAILS, loudly, as it should.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if not (_REPO_ROOT / "Dockerfile").exists():  # pragma: no cover — image only
+    pytest.skip("the repository tree is not mounted (in-image run); `evals/` "
+                "is not shipped in the Lambda image by design",
+                allow_module_level=True)
 
 from director.schema import ActionItem, DirectorWeeklyActionPlan
 from evals.director_arm_eval import (
