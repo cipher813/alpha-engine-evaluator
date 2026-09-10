@@ -201,7 +201,17 @@ krepis[flow-doctor,openai]==0.59.53  # pinned per §139 — first-party/fast-mov
 # now `required`, and `stale_tiles` is typed. Below this pin
 # tests/test_report_card_producer_contract.py validates against a schema that
 # cannot fail on a producer which stops emitting any of them.
-nousergon-lib[quant-stats,contracts] @ git+https://github.com/nousergon/nousergon-lib@v0.124.83
+# Raised to v0.124.116 (alpha-engine-config-I9486): `evals/director_arm_eval.py`
+# compares the Director's capability-tier arms and must use the fleet's single
+# implementation of the champion/challenger score ladder and confidence
+# sequence — `nousergon_lib.arena.confseq`, which champion-challenger-policy
+# §§3-6 names as the one implementation and whose re-implementation in a slot
+# it declares a defect (shared-code-policy). `arena` first appears between
+# v0.124.90 and v0.124.100; .116 is the current release. The Lambda image does
+# NOT gain this dependency — `evals/` is not COPYed into it (see Dockerfile) —
+# so the bump is a test-and-tooling surface change, graded by the in-image
+# pytest job exactly as any other.
+nousergon-lib[quant-stats,contracts] @ git+https://github.com/nousergon/nousergon-lib@v0.124.116
 
 # Director (Layer C) — single structured LLM call for PLAN GENERATION
 # (director/agent.py, DIRECTOR_GROUP="ultra", resolved through
