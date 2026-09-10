@@ -27,8 +27,14 @@ import yaml
 
 from director import agent
 
-#: An `ultra`-shaped registry: a Zhipu primary that declares streaming and
-#: tool_choice, and a DeepSeek second arm that declares streaming only.
+#: An `ultra`-shaped registry: a primary that declares streaming AND
+#: tool_choice, and a second arm that declares streaming only — the shape that
+#: made one wire name carry two chains.
+#:
+#: Upstream hosts are `.invalid` on purpose. Real provider hostnames in a
+#: fixture trip `provider-linkage-guard`, which is right to flag them: it
+#: cannot tell a fixture literal from a call site addressing a provider
+#: directly, and that ambiguity is the thing the guard exists to remove.
 _REGISTRY = {
     "schema_version": 1,
     "model_groups": {"ultra": ["glm-5.2-direct", "deepseek-v4-pro"]},
@@ -36,7 +42,7 @@ _REGISTRY = {
         {
             "id": "glm-5.2-direct", "name": "GLM 5.2", "provider": "zhipu",
             "route": "egress_proxy", "api_base": "http://127.0.0.1:8981/v1",
-            "upstream_host": "api.z.ai", "model": "glm-5.2", "status": "active",
+            "upstream_host": "api.primary.invalid", "model": "glm-5.2", "status": "active",
             "reachable_from": ["laptop", "ec2"],
             "endpoints": {"openai": "http://127.0.0.1:8981/v1"},
             "params": {"max_tokens": 8192},
@@ -45,7 +51,7 @@ _REGISTRY = {
         {
             "id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro", "provider": "deepseek",
             "route": "egress_proxy", "api_base": "http://127.0.0.1:8972/v1",
-            "upstream_host": "api.deepseek.com", "model": "deepseek-v4-pro",
+            "upstream_host": "api.secondarm.invalid", "model": "deepseek-v4-pro",
             "status": "active", "reachable_from": ["laptop", "ec2"],
             "endpoints": {"openai": "http://127.0.0.1:8972/v1"},
             "params": {"max_tokens": 8192},
